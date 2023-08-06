@@ -3,17 +3,21 @@ require('dotenv').config();
 
 class DatabaseOptimizer {
     constructor() {
-        // Create a database connection using environment variables
-        this.connection = mysql.createConnection({
-            host: process.env.DB_HOST,
-            user: process.env.DB_USER,
-            password: process.env.DB_PASSWORD,
-            database: process.env.DB_DATABASE,
-        });
+        this.connection = null;
     }
 
-    // Connect to the database
-    connectToDatabase() {
+    async connectToDatabase() {
+        // Create a database connection using environment variables
+        if (!this.connection || this.connection.state === 'disconnected') {
+            this.connection = mysql.createConnection({
+                host: process.env.DB_HOST,
+                user: process.env.DB_USER,
+                password: process.env.DB_PASSWORD,
+                database: process.env.DB_DATABASE,
+            });
+        }
+
+        // Connect to the database
         return new Promise((resolve, reject) => {
             this.connection.connect((err) => {
                 if (err) {
@@ -28,7 +32,11 @@ class DatabaseOptimizer {
     }
 
     // Run a database query with optional parameter values
-    runQuery(query, values) {
+    async runQuery(query, values) {
+        if (!this.connection || this.connection.state === 'disconnected') {
+            await this.connectToDatabase();
+        }
+
         return new Promise((resolve, reject) => {
             this.connection.query(query, values, (err, results) => {
                 if (err) {
@@ -41,19 +49,24 @@ class DatabaseOptimizer {
         });
     }
 
+    // Method to close the database connection
+    async closeConnection() {
+        if (this.connection && this.connection.state !== 'disconnected') {
+            await new Promise((resolve) => this.connection.end(resolve));
+            console.log('Connection closed.');
+        }
+    }
+
     // Get the names of all tables in the database
-    getTableNames() {
-        return new Promise((resolve, reject) => {
-            this.connection.query('SHOW TABLES', (err, results) => {
-                if (err) {
-                    reject(err);
-                }
-                else {
-                    const tableNames = results.map((row) => Object.values(row)[0]);
-                    resolve(tableNames);
-                }
-            });
-        });
+    async getTableNames() {
+        try {
+            const results = await this.runQuery('SHOW TABLES');
+            return results.map((row) => Object.values(row)[0]);
+        }
+        catch (err) {
+            console.error('Error getting table names: ', err);
+            return [];
+        }
     }
 
     // Analyze a specific table for index count, row count, column cardinality, and unused indexes
@@ -63,24 +76,33 @@ class DatabaseOptimizer {
             const rowCountQuery = 'SELECT COUNT(*) AS rowCount FROM ??';
             const columnCardinalityQuery = `
                 SELECT
-                    COLUMN_NAME,
-                    COUNT(DISTINCT COLUMN_NAME) AS cardinality 
+                COLUMN_NAME,
+                COUNT(DISTINCT COLUMN_NAME) AS cardinality 
                 FROM
-                    INFORMATION_SCHEMA.COLUMNS 
+                INFORMATION_SCHEMA.COLUMNS 
                 WHERE
-                    TABLE_NAME = ? 
+                TABLE_NAME = ? 
                 GROUP BY
-                    COLUMN_NAME 
+                COLUMN_NAME 
                 HAVING
-                    cardinality < 10;`;
-            const tableStatusQuery = 'SHOW TABLE STATUS LIKE ??';
+                cardinality < 10;`;
+            const tableStatusQuery = 'SHOW TABLE STATUS LIKE ?';
+            const columnDataTypesQuery = `
+                SELECT
+                COLUMN_NAME,
+                COLUMN_TYPE
+                FROM
+                INFORMATION_SCHEMA.COLUMNS 
+                WHERE
+                TABLE_NAME = ?;`;
 
             // Run all necessary queries in parallel
-            const [indexes, rowCountResult, columnCardinalityResult, tableStatus] = await Promise.all([
+            const [indexes, rowCountResult, columnCardinalityResult, tableStatus, columnDataTypesResult] = await Promise.all([
                 this.runQuery(indexQuery, [tableName]),
                 this.runQuery(rowCountQuery, [tableName]),
                 this.runQuery(columnCardinalityQuery, [tableName]),
-                this.runQuery(tableStatusQuery, [tableName])
+                this.runQuery(tableStatusQuery, [tableName]),
+                this.runQuery(columnDataTypesQuery, [tableName])
             ]);
 
             // Extract unused indexes from table status
@@ -109,7 +131,8 @@ class DatabaseOptimizer {
                 rowCount: rowCountResult[0].rowCount,
                 columnCardinality: columnCardinalityResult,
                 unusedIndexes,
-                hasForeignKeys
+                hasForeignKeys,
+                columnDataTypes: columnDataTypesResult
             };
 
             console.log('Table statistics:', tableStats);
@@ -119,6 +142,36 @@ class DatabaseOptimizer {
             console.error('Error analyzing table: ', err);
             return {};
         }
+    }
+
+    // Method to identify potential data type optimizations
+    getDataTypeOptimizations(tableName, columnDataTypes) {
+        const suggestions = [];
+        const dataTypeMap = {
+            int: 'smallint',
+            bigint: 'int',
+            float: 'decimal',
+            double: 'decimal',
+            char: 'varchar',
+            text: 'varchar',
+            longtext: 'text',
+            date: 'datetime',
+        };
+
+        for (const column of columnDataTypes) {
+            const columnName = column.COLUMN_NAME;
+            const currentDataType = column.COLUMN_TYPE.toLowerCase();
+            const optimizedDataType = dataTypeMap[currentDataType];
+
+            if (optimizedDataType && currentDataType !== optimizedDataType) {
+                suggestions.push({
+                    tableName: tableName,
+                    suggestion: `Consider optimizing data type of column "${columnName}" from "${currentDataType}" to "${optimizedDataType}" to save storage space.`,
+                });
+            }
+        }
+
+        return suggestions;
     }
 
     // Analyze all tables in the database and provide optimization suggestions
@@ -170,20 +223,24 @@ class DatabaseOptimizer {
                         suggestion: 'Add foreign keys to establish relationships between tables.',
                     });
                 }
+
+                // Perform data type optimizations
+                const dataTypeOptimizations = this.getDataTypeOptimizations(tableName, tableStats.columnDataTypes);
+
+                if (dataTypeOptimizations.length > 0) {
+                    suggestions.push(...dataTypeOptimizations);
+                }
             }
 
             // Close the database connection
-            this.connection.end();
+            this.closeConnection();
             return suggestions;
         }
         catch (err) {
             console.error('Error analyzing tables: ', err);
 
             // Close the database connection if an error occurs
-            if (this.connection) {
-                this.connection.end();
-            }
-
+            this.closeConnection();
             return [];
         }
     }
