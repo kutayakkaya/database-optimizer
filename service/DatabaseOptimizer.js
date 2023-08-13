@@ -113,8 +113,7 @@ class DatabaseOptimizer {
                 if (unused.length > 0) {
                     acc.push({
                         index_name: unused.join(', '),
-                        table_name: row.Name,
-                        last_access_time: row.Update_time,
+                        table_name: row.Name
                     });
                 }
                 return acc;
@@ -134,8 +133,6 @@ class DatabaseOptimizer {
                 hasForeignKeys,
                 columnDataTypes: columnDataTypesResult
             };
-
-            console.log('Table statistics:', tableStats);
             return tableStats;
         }
         catch (err) {

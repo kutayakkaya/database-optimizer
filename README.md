@@ -11,6 +11,7 @@ The Database Optimizer is a Node.js application that helps you analyze your MySQ
 - Detect and suggest removal of unused indexes to reduce unnecessary overhead.
 - Advise adding foreign keys to establish relationships between tables for data consistency and integrity.
 - Support for identifying potential data type optimizations to save storage space.
+- Generate an HTML report for optimization suggestions, providing a web-based interface for easier accessibility and understanding.
 
 ## Getting Started
 
@@ -50,7 +51,7 @@ DB_DATABASE=your-database-name
 To run the Database Optimizer and get optimization suggestions for your database tables:
 
 ```
-node app.js
+node index.js
 ```
 
 The application will connect to your MySQL database and perform analysis on each table. After the analysis is complete, it will display optimization suggestions for each table.
